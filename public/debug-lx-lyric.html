@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>LX 歌词调试页面</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #fff; }
+        .section { margin: 20px 0; padding: 15px; background: #2a2a2a; border-radius: 8px; }
+        .section h3 { margin-top: 0; color: #4a9eff; }
+        pre { background: #333; padding: 10px; border-radius: 4px; overflow-x: auto; }
+        .success { color: #4ade80; }
+        .error { color: #ef4444; }
+        .warning { color: #f59e0b; }
+        button { padding: 10px 20px; background: #4a9eff; border: none; color: white; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #3b7fd6; }
+        input { padding: 8px; background: #333; border: 1px solid #555; color: white; border-radius: 4px; width: 400px; }
+    </style>
+</head>
+<body>
+    <h1>🎵 LX 音源歌词调试工具</h1>
+
+    <div class="section">
+        <h3>📋 使用说明</h3>
+        <p>1. 在 Mineradio 中播放一首 LX 音源的歌曲</p>
+        <p>2. 点击下面的"检查当前歌曲"按钮</p>
+        <p>3. 如果有问题，点击"手动获取歌词"测试</p>
+    </div>
+
+    <div class="section">
+        <h3>🔍 快速检查</h3>
+        <button onclick="checkCurrentSong()">检查当前歌曲</button>
+        <button onclick="testLyricFetch()">手动获取歌词</button>
+        <button onclick="clearCache()">清除歌词缓存</button>
+        <button onclick="location.reload(true)">强制刷新页面</button>
+    </div>
+
+    <div class="section">
+        <h3>📊 检查结果</h3>
+        <pre id="output">等待检查...</pre>
+    </div>
+
+    <div class="section">
+        <h3>🧪 手动测试歌词接口</h3>
+        <p>输入歌词 URL 进行测试：</p>
+        <input type="text" id="lyricUrl" placeholder="/api/lyric?id=123456789" value="/api/lyric?id=186016">
+        <button onclick="fetchManualLyric()">获取歌词</button>
+        <pre id="lyricOutput">等待请求...</pre>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        const lyricOutput = document.getElementById('lyricOutput');
+
+        function log(msg, type = 'info') {
+            const colors = { success: '#4ade80', error: '#ef4444', warning: '#f59e0b', info: '#fff' };
+            const span = document.createElement('span');
+            span.style.color = colors[type];
+            span.textContent = msg + '\n';
+            output.appendChild(span);
+        }
+
+        function clearOutput() {
+            output.innerHTML = '';
+        }
+
+        async function checkCurrentSong() {
+            clearOutput();
+            log('========================================');
+            log('开始检查当前歌曲...', 'info');
+            log('========================================\n');
+
+            // 检查是否在 Mineradio 环境中
+            if (typeof window.opener !== 'undefined' && window.opener) {
+                log('✓ 检测到父窗口，尝试访问...', 'success');
+                const parentWin = window.opener;
+
+                if (!parentWin.playQueue || !parentWin.currentIdx) {
+                    log('❌ 父窗口没有 playQueue 或 currentIdx', 'error');
+                    log('请确保在 Mineradio 中打开此页面', 'warning');
+                    return;
+                }
+
+                const song = parentWin.playQueue[parentWin.currentIdx];
+                if (!song) {
+                    log('❌ 没有正在播放的歌曲', 'error');
+                    return;
+                }
+
+                log('1️⃣ 歌曲基本信息:', 'info');
+                log('   歌曲名: ' + song.name);
+                log('   歌手: ' + song.artist);
+                log('   provider: ' + (song.provider || song.source));
+
+                const provider = parentWin.songProviderKey ? parentWin.songProviderKey(song) : (song.provider || song.source);
+                log('\n2️⃣ Provider 检查:', 'info');
+                log('   songProviderKey() 返回: ' + provider);
+                log('   是否为 LX: ' + (provider === 'lx' ? '✓ 是' : '✗ 否'), provider === 'lx' ? 'success' : 'error');
+
+                if (provider === 'lx') {
+                    log('\n3️⃣ LX 音源详细信息:', 'info');
+                    log('   lxOriginSource: ' + (song.lxOriginSource || '缺失'), song.lxOriginSource ? 'success' : 'error');
+                    log('   lxSourceScriptId: ' + (song.lxSourceScriptId || '缺失'));
+
+                    if (song.lxMusicInfo) {
+                        log('   ✓ lxMusicInfo 存在', 'success');
+                        if (song.lxMusicInfo.meta) {
+                            log('   ✓ lxMusicInfo.meta 存在', 'success');
+                            log('     - songId: ' + (song.lxMusicInfo.meta.songId || '缺失'));
+                            log('     - hash: ' + (song.lxMusicInfo.meta.hash || '缺失'));
+                            log('     - strMediaMid: ' + (song.lxMusicInfo.meta.strMediaMid || '缺失'));
+                        } else {
+                            log('   ✗ lxMusicInfo.meta 缺失', 'error');
+                        }
+                    } else {
+                        log('   ✗ lxMusicInfo 缺失', 'error');
+                    }
+
+                    // 测试歌词端点
+                    log('\n4️⃣ 歌词端点测试:', 'info');
+                    if (parentWin.lyricEndpointForSong) {
+                        const endpoint = parentWin.lyricEndpointForSong(song);
+                        log('   lyricEndpointForSong() 返回: ' + endpoint, 'success');
+                        document.getElementById('lyricUrl').value = endpoint;
+                    } else {
+                        log('   ✗ lyricEndpointForSong 函数不存在', 'error');
+                    }
+
+                    // 检查当前歌词状态
+                    log('\n5️⃣ 当前歌词状态:', 'info');
+                    if (parentWin.lyricsLines) {
+                        log('   lyricsLines 长度: ' + parentWin.lyricsLines.length);
+                        if (parentWin.lyricsLines[0]) {
+                            log('   第一行: ' + parentWin.lyricsLines[0].text);
+                            log('   是否 fallback: ' + (parentWin.lyricsLines[0].fallback ? '✓ 是（只显示歌名）' : '✗ 否'));
+                        }
+                    }
+                } else {
+                    log('\n⚠️ 当前不是 LX 音源，无法测试', 'warning');
+                    log('请播放一首 LX 音源的歌曲后再试', 'warning');
+                }
+
+            } else {
+                log('⚠️ 未检测到父窗口', 'warning');
+                log('请通过以下方式打开此页面:', 'info');
+                log('1. 在 Mineradio 控制台运行:', 'info');
+                log('   window.open("debug-page.html")', 'info');
+                log('2. 或在浏览器中直接访问 Mineradio 页面的控制台', 'info');
+            }
+        }
+
+        async function testLyricFetch() {
+            clearOutput();
+            log('开始测试歌词获取...', 'info');
+
+            if (typeof window.opener !== 'undefined' && window.opener) {
+                const parentWin = window.opener;
+                const song = parentWin.playQueue && parentWin.playQueue[parentWin.currentIdx];
+
+                if (song && parentWin.fetchLyric) {
+                    log('调用 fetchLyric()...', 'info');
+                    try {
+                        await parentWin.fetchLyric(song, parentWin.trackSwitchToken);
+                        log('✓ fetchLyric() 调用完成', 'success');
+                        log('请检查歌词面板', 'info');
+                    } catch (e) {
+                        log('✗ fetchLyric() 调用失败: ' + e.message, 'error');
+                    }
+                } else {
+                    log('✗ 无法调用 fetchLyric()', 'error');
+                }
+            } else {
+                log('✗ 未检测到父窗口', 'error');
+            }
+        }
+
+        async function fetchManualLyric() {
+            const url = document.getElementById('lyricUrl').value;
+            lyricOutput.textContent = '正在请求: ' + url + '\n';
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                lyricOutput.textContent = '状态: ' + response.status + '\n\n';
+                lyricOutput.textContent += '响应数据:\n' + JSON.stringify(data, null, 2);
+
+                if (data.lyric) {
+                    lyricOutput.textContent += '\n\n✓ 歌词获取成功！';
+                } else {
+                    lyricOutput.textContent += '\n\n✗ 响应中没有 lyric 字段';
+                }
+            } catch (e) {
+                lyricOutput.textContent = '✗ 请求失败: ' + e.message;
+            }
+        }
+
+        function clearCache() {
+            if (typeof window.opener !== 'undefined' && window.opener) {
+                const parentWin = window.opener;
+                if (parentWin.lyricTranslationFallbackCache) {
+                    parentWin.lyricTranslationFallbackCache = {};
+                    log('✓ 已清除 lyricTranslationFallbackCache', 'success');
+                }
+                if (parentWin.lyricTranslationFallbackMissCache) {
+                    parentWin.lyricTranslationFallbackMissCache = {};
+                    log('✓ 已清除 lyricTranslationFallbackMissCache', 'success');
+                }
+                alert('歌词缓存已清除！');
+            } else {
+                alert('无法访问父窗口');
+            }
+        }
+
+        // 页面加载时的提示
+        window.onload = function() {
+            log('🎵 LX 音源歌词调试工具已就绪', 'success');
+            log('', 'info');
+            log('使用方法:', 'info');
+            log('1. 在 Mineradio 的浏览器控制台运行:', 'info');
+            log('   window.open("file:///' + location.pathname + '")', 'info');
+            log('2. 或复制此页面的调试代码到控制台运行', 'info');
+            log('', 'info');
+            log('准备好后，点击"检查当前歌曲"按钮开始', 'info');
+        };
+    </script>
+</body>
+</html>

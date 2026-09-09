@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check public/js/modules/05-playback/11-provider-fallback.js)",
+      "Bash(node --check public/js/modules/05-playback/07a-lx-source-manager.js)",
+      "Bash(node -c server.js)",
+      "Bash(ls \"d:/code/lx-music-desktop-master/lx-music-desktop-master\" 2>&1 | head -30)",
+      "Read(//d/code/lx-music-desktop-master/lx-music-desktop-master/**)",
+      "Bash(head -30 \"d:/lxMusic/Huibq音源_v1.2.0.js\" 2>&1)",
+      "Read(//d/lxMusic/**)",
+      "Bash(./test_lx_all.sh)"
+    ]
+  }
+}
