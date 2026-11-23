@@ -1692,6 +1692,72 @@ async function handleSearch(keywords, limit, offset) {
   return mapped;
 }
 
+function lyricBodyText(body, key) {
+  return body && body[key] && typeof body[key].lyric === 'string' ? body[key].lyric : '';
+}
+
+async function fetchNeteaseLyricById(id) {
+  const songId = String(id || '').trim();
+  if (!songId) return null;
+  let body = {};
+  let source = 'lyric';
+  try {
+    if (typeof lyric_new === 'function') {
+      const result = await lyric_new({ id: songId, cookie: userCookie, timestamp: Date.now() });
+      body = result.body || {};
+      source = 'lyric_new';
+    }
+  } catch (error) {
+    console.warn('[LxLyricFallback] lyric_new failed:', error.message);
+  }
+  const hasPrimary = !!(lyricBodyText(body, 'lrc') || lyricBodyText(body, 'yrc'));
+  const hasTranslation = !!(lyricBodyText(body, 'tlyric') || lyricBodyText(body, 'ytlrc'));
+  if (!hasPrimary || !hasTranslation) {
+    const result = await lyric({ id: songId, cookie: userCookie, timestamp: Date.now() });
+    const fallback = result.body || {};
+    ['lrc', 'tlyric', 'yrc', 'ytlrc', 'romalrc', 'yromalrc'].forEach((key) => {
+      if (!body[key] && fallback[key]) body[key] = fallback[key];
+    });
+    source = source === 'lyric_new' ? 'lyric_new+lyric' : 'lyric';
+  }
+  return {
+    lyric: lyricBodyText(body, 'lrc'),
+    tlyric: lyricBodyText(body, 'tlyric'),
+    yrc: lyricBodyText(body, 'yrc'),
+    ytlrc: lyricBodyText(body, 'ytlrc'),
+    romalrc: lyricBodyText(body, 'romalrc'),
+    yromalrc: lyricBodyText(body, 'yromalrc'),
+    source,
+  };
+}
+
+async function findNeteaseLyricForLxSong(song) {
+  song = song || {};
+  const name = String(song.name || song.title || '').trim();
+  const artist = String(song.artist || song.artistName || '').trim();
+  if (!name) return null;
+  const candidates = await handleSearch([name, artist].filter(Boolean).join(' '), 12, 0);
+  const target = {
+    name,
+    artist,
+    album: song.album || song.albumName || '',
+    durationMs: Number(song.duration || song.durationMs || 0) || 0,
+  };
+  const matched = lxStyleFindBestMatch(target, candidates || [])
+    || (candidates || []).find((candidate) =>
+      lxStyleNormalizeText(candidate.name) === lxStyleNormalizeText(name) &&
+      isArtistMatch(artist, candidate.artist)
+    );
+  if (!matched || !matched.id) return null;
+  const lyricPayload = await fetchNeteaseLyricById(matched.id);
+  if (!lyricPayload || (!lyricPayload.lyric && !lyricPayload.yrc)) return null;
+  return Object.assign({}, lyricPayload, {
+    provider: 'lx',
+    source: 'netease-lyric-fallback',
+    matchedSong: { id: matched.id, name: matched.name, artist: matched.artist },
+  });
+}
+
 const NETEASE_SOURCE_MATCH_POSITIVE_TTL_MS = 12 * 60 * 60 * 1000;
 const NETEASE_SOURCE_MATCH_NEGATIVE_TTL_MS = 5 * 60 * 1000;
 const NETEASE_SOURCE_MATCH_MAX_CANDIDATES = 4;
@@ -5392,6 +5458,49 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       console.error('[LXSearch]', err);
       sendJSON(res, { provider: 'lx', songs: [], error: err.code || err.message || 'LX_SEARCH_FAILED' }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/lx/lyric') {
+    try {
+      const sourceKey = String(url.searchParams.get('source') || '').trim().toLowerCase();
+      const scriptId = String(url.searchParams.get('scriptId') || '').trim();
+      let musicInfo = null;
+      try {
+        const rawMusicInfo = url.searchParams.get('musicInfo') || '';
+        musicInfo = rawMusicInfo ? JSON.parse(rawMusicInfo) : null;
+      } catch (_) {}
+      const song = {
+        name: url.searchParams.get('name') || '',
+        artist: url.searchParams.get('artist') || '',
+        album: url.searchParams.get('album') || '',
+      };
+      const resolved = await lxSourceManager.resolveSongLyric({
+        lxSourceScriptId: scriptId,
+        lxOriginSource: sourceKey,
+        lxMusicInfo: musicInfo || {
+          name: song.name,
+          singer: song.artist ? [song.artist] : [],
+          source: sourceKey,
+          meta: { songId: url.searchParams.get('songId') || '' },
+        },
+      });
+      if (resolved && (resolved.lyric || resolved.yrc)) {
+        sendJSON(res, resolved);
+        return;
+      }
+      if (sourceKey === 'kw' || sourceKey === 'mg') {
+        const fallback = await findNeteaseLyricForLxSong(song);
+        if (fallback) {
+          sendJSON(res, fallback);
+          return;
+        }
+      }
+      sendJSON(res, Object.assign({ provider: 'lx', source: sourceKey, lyric: '', tlyric: '', yrc: '', ytlrc: '' }, resolved || {}));
+    } catch (err) {
+      console.error('[LxLyric]', err);
+      sendJSON(res, { provider: 'lx', error: err.message, lyric: '', tlyric: '', yrc: '', ytlrc: '' }, 500);
     }
     return;
   }

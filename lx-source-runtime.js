@@ -245,6 +245,19 @@ function normalizeResolvedUrl(payload) {
   };
 }
 
+function normalizeResolvedLyric(payload) {
+  if (typeof payload === 'string') return { lyric: payload, tlyric: '', yrc: '', ytlrc: '', source: '' };
+  if (!payload || typeof payload !== 'object') return { lyric: '', tlyric: '', yrc: '', ytlrc: '', source: '' };
+  const body = payload.data && typeof payload.data === 'object' ? payload.data : payload;
+  return {
+    lyric: pickString(body, ['lyric', 'lrc', 'lyrics']),
+    tlyric: pickString(body, ['tlyric', 'translation', 'trans']),
+    yrc: pickString(body, ['yrc', 'klyric']),
+    ytlrc: pickString(body, ['ytlrc', 'yromalrc']),
+    source: pickString(body, ['source', 'sourceLabel', 'from']),
+  };
+}
+
 function qualityCandidates(preferred, available) {
   // 修复：只使用 LX Music 标准的音质列表，忽略平台特定的音质名称
   const lxStandardQualities = ['128k', '320k', 'flac', 'flac24bit'];
@@ -1112,6 +1125,68 @@ class LxSourceManager {
     }
     console.log('[LX resolveSongUrl] 所有候选都失败，返回空');
     return { provider: 'lx', url: '', headers: {}, error: 'LX_URL_EMPTY', playable: false };
+  }
+
+  async resolveSongLyric(payload) {
+    const sourceKey = String(payload && payload.lxOriginSource || '').trim().toLowerCase();
+    const musicInfo = payload && payload.lxMusicInfo || null;
+    const initial = Array.isArray(payload && payload.lxCandidates) && payload.lxCandidates.length
+      ? payload.lxCandidates
+      : [{
+        scriptId: payload && payload.lxSourceScriptId,
+        scriptName: payload && payload.lxSourceName,
+        source: sourceKey,
+        musicInfo,
+      }];
+    const candidates = [];
+    const seen = new Set();
+    const push = (candidate) => {
+      if (!candidate || !candidate.scriptId || !candidate.musicInfo) return;
+      const candidateSource = String(candidate.source || sourceKey).trim().toLowerCase();
+      const record = this.findRecord(candidate.scriptId);
+      if (!candidateSource || !record || record.enabled === false || record.initStatus !== 'ready') return;
+      if (!sourceSupportsAction(record, candidateSource, 'lyric')) return;
+      const key = `${record.id}:${candidateSource}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push({
+        scriptId: record.id,
+        scriptName: record.name,
+        source: candidateSource,
+        musicInfo: candidate.musicInfo,
+      });
+    };
+    initial.forEach(push);
+    if (sourceKey && musicInfo) {
+      this.enabledRecords().forEach((record) => push({
+        scriptId: record.id,
+        scriptName: record.name,
+        source: sourceKey,
+        musicInfo,
+      }));
+    }
+    for (const candidate of candidates) {
+      const record = this.findRecord(candidate.scriptId);
+      const runtime = record ? this.runtimes.get(record.id) : null;
+      if (!record || !runtime || record.initStatus !== 'ready') continue;
+      try {
+        const raw = await runtime.dispatchRequest('lyric', {
+          info: { source: candidate.source, musicInfo: candidate.musicInfo },
+        }, LX_REQUEST_TIMEOUT_MS);
+        const lyric = normalizeResolvedLyric(raw);
+        if (!lyric.lyric && !lyric.yrc) continue;
+        return Object.assign({
+          provider: 'lx',
+          source: candidate.source,
+          scriptId: candidate.scriptId,
+          scriptName: record.name,
+          playable: true,
+        }, lyric);
+      } catch (error) {
+        console.warn('[LX resolveSongLyric] failed:', record.name, candidate.source, error && error.message || error);
+      }
+    }
+    return { provider: 'lx', source: sourceKey, lyric: '', tlyric: '', yrc: '', ytlrc: '', error: 'LX_LYRIC_EMPTY', playable: false };
   }
 }
 

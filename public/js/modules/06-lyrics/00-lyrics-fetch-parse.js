@@ -43,8 +43,19 @@ function lyricEndpointForSong(songOrId) {
         '&duration=' + encodeURIComponent(duration);
     }
 
-    // 咪咕 (mg) - 暂不支持，使用fallback
-    // 默认：尝试网易云
+    // 酷我/咪咕没有统一的本地歌词接口：优先交给 LX 源 lyric 动作，
+    // 没有 lyric 能力时由后端按歌名/歌手匹配网易云歌词。
+    if (lxOriginSource === 'kw' || lxOriginSource === 'mg') {
+      return '/api/lx/lyric?source=' + encodeURIComponent(lxOriginSource) +
+        '&scriptId=' + encodeURIComponent(song.lxSourceScriptId || '') +
+        '&name=' + encodeURIComponent(song.name || song.title || '') +
+        '&artist=' + encodeURIComponent(song.artist || '') +
+        '&album=' + encodeURIComponent(song.album || song.albumName || '') +
+        '&songId=' + encodeURIComponent(lxMeta.songId || lxMeta.hash || '') +
+        '&musicInfo=' + encodeURIComponent(JSON.stringify(lxMusicInfo));
+    }
+
+    // 其它 LX 来源仍尝试使用原平台 ID 作为最后兜底。
     if (lxMeta.songId) {
       return '/api/lyric?id=' + encodeURIComponent(lxMeta.songId);
     }
