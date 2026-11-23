@@ -131,9 +131,6 @@
         </button>
         <button id="clear-cover-btn" class="icon-btn" onclick="clearCustomCoverForCurrent()" title="取消自定义封面"
           aria-label="取消自定义封面">×</button>
-        <button id="lx-source-entry" class="icon-btn" onclick="openLxSourceModal()" title="管理 LX 自定义音源"
-          aria-label="管理 LX 自定义音源">LX</button>
-        <div id="lx-source-entry-note" class="upload-entry-note" aria-live="polite">未导入</div>
         <div id="upload-panel" class="upload-panel" onclick="event.stopPropagation()" aria-label="导入面板">
           <button class="upload-choice" type="button" onclick="triggerUploadInput('cover')"><svg viewBox="0 0 24 24"
               fill="none" stroke-width="2">
@@ -363,6 +360,20 @@
         <div>
           <div class="fx-title">视觉控制台</div>
           <div class="fx-sub">MINERADIO VISUALS · 鼠标移开自动隐藏</div>
+        </div>
+      </div>
+
+      <div id="lx-source-console-panel" class="lx-source-console-panel">
+        <div class="lx-source-console-head">
+          <div>
+            <strong>LX 自定义音源</strong>
+            <small>导入、启用和管理 LX Music 脚本</small>
+          </div>
+          <span id="lx-source-entry-note" class="lx-source-console-status" aria-live="polite">未导入</span>
+        </div>
+        <div class="lx-source-console-actions">
+          <button class="fx-mini-btn ghost" type="button" onclick="openLxSourceModal()">管理音源</button>
+          <button class="fx-mini-btn ghost" type="button" onclick="importLxSourceFromFile()">导入本地脚本</button>
         </div>
       </div>
 

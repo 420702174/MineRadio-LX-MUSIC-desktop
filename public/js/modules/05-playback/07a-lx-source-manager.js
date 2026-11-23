@@ -186,9 +186,6 @@ function lxSourceRowHtml(item, index) {
     (item.initError ? '<div class="lx-source-error">' + escHtml(item.initError) + '</div>' : '') +
     '</div>' +
     '<div class="lx-source-actions">' +
-    '<button class="modal-btn" type="button" onclick="moveLxSource(' + index + ', -1)" ' + (index <= 0 ? 'disabled ' : '') + '>上移</button>' +
-    '<button class="modal-btn" type="button" onclick="moveLxSource(' + index + ', 1)" ' + (index >= lxSourceUiState.sources.length - 1 ? 'disabled ' : '') + '>下移</button>' +
-    '<button class="modal-btn" type="button" onclick="reloadLxSource(\'' + escHtml(item.id) + '\')">重载</button>' +
     '<button class="modal-btn" type="button" onclick="toggleLxSource(\'' + escHtml(item.id) + '\',' + (disabled ? 'true' : 'false') + ')">' + (disabled ? '启用' : '禁用') + '</button>' +
     '<button class="modal-btn primary" type="button" onclick="removeLxSource(\'' + escHtml(item.id) + '\')">删除</button>' +
     '</div>' +
@@ -318,27 +315,6 @@ async function toggleLxSource(id, enabled) {
 
 async function removeLxSource(id) {
   await postLxSource('/api/lx/source/delete', { id: id }, 'LX 音源已删除');
-}
-
-async function reloadLxSource(id) {
-  await postLxSource('/api/lx/source/reload', { id: id }, 'LX 音源已重载');
-}
-
-async function moveLxSource(index, delta) {
-  index = Number(index) || 0;
-  delta = Number(delta) || 0;
-  var target = index + delta;
-  if (target < 0 || target >= lxSourceUiState.sources.length) return;
-  var moved = lxSourceUiState.sources[index];
-  if (!moved) return;
-  lxSourceUiState.sources.splice(index, 1);
-  lxSourceUiState.sources.splice(target, 0, moved);
-  for (var i = 0; i < lxSourceUiState.sources.length; i++) {
-    lxSourceUiState.sources[i].order = i;
-    await postLxSource('/api/lx/source/update', { id: lxSourceUiState.sources[i].id, order: i });
-  }
-  renderLxSourceList();
-  showToast('LX 音源顺序已更新');
 }
 
 // ========== 批量操作功能 ==========

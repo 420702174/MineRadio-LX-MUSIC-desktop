@@ -456,8 +456,8 @@ function songSourceTagHtml(song, opts) {
   var key = /^(netease|qq|kugou|qishui|spotify|lx)$/.test(String(rawKey || '')) ? String(rawKey) : songProviderKey(song);
   var label = key === 'qq' ? 'QQ' : (key === 'kugou' ? 'KG' : (key === 'qishui' ? 'QS' : (key === 'spotify' ? 'SP' : (key === 'lx' ? 'LX' : 'NE'))));
   if (opts.switcher) {
-    if (key === 'lx') return '<span class="tag-source ' + key + ' control-source-chip" title="' + escHtml(lxSourceSubLabel(song)) + '">' + label + '</span>';
-    return '<button type="button" class="tag-source ' + key + ' control-source-chip" title="切换音源" aria-haspopup="true" onclick="toggleControlSourceSwitcher(event)">' + label + '</button>';
+    var sourceTitle = key === 'lx' ? lxSourceSubLabel(song) : '切换音源';
+    return '<button type="button" class="tag-source ' + key + ' control-source-chip" title="' + escHtml(sourceTitle) + '" aria-haspopup="true" onclick="toggleControlSourceSwitcher(event)">' + label + '</button>';
   }
   return '<span class="tag-source ' + key + '">' + label + '</span>';
 }
@@ -468,7 +468,8 @@ function controlSourceProviders() {
     { key: 'qq', label: 'QQ', title: 'QQ音乐' },
     { key: 'kugou', label: 'KG', title: '酷狗' },
     { key: 'qishui', label: 'QS', title: '汽水' },
-    { key: 'spotify', label: 'SP', title: 'Spotify' }
+    { key: 'spotify', label: 'SP', title: 'Spotify' },
+    { key: 'lx', label: 'LX', title: 'LX 音源' }
   ];
 }
 function controlSourceProviderTitle(provider) {
@@ -527,6 +528,46 @@ function controlSourceMatchSong(entry) {
 function controlSourceMatchIssue(entry) {
   return entry && entry.issue ? entry.issue : 'no_source';
 }
+async function findLxControlSourceMatchResult(song) {
+  if (!song || typeof searchLxCandidateForSong !== 'function') return { song: null, issue: 'no_source' };
+
+  var candidate = await searchLxCandidateForSong(song);
+  if (!candidate || !candidate.url || !candidate.matchedSong || !candidate.matchedSong.musicInfo) {
+    return { song: null, issue: 'no_source' };
+  }
+
+  var matchedSong = candidate.matchedSong;
+  var lxSong = Object.assign({}, song, {
+    provider: 'lx',
+    source: 'lx',
+    playable: true,
+    name: matchedSong.name || song.name || song.title || '',
+    artist: matchedSong.artist || song.artist || '',
+    lxSourceScriptId: candidate.lxSourceScriptId || '',
+    lxSourceName: candidate.lxSourceName || '',
+    lxOriginSource: candidate.lxOriginSource || matchedSong.source || '',
+    lxMusicInfo: matchedSong.musicInfo,
+    lxQualitys: Array.isArray(candidate.lxQualitys) ? candidate.lxQualitys : [],
+    lxCandidates: Array.isArray(candidate.lxCandidates) ? candidate.lxCandidates : [],
+  });
+
+  return {
+    song: cloneSong(lxSong),
+    issue: '',
+    playbackData: {
+      provider: 'lx',
+      source: 'lx',
+      url: candidate.url,
+      level: candidate.level || candidate.quality || '',
+      quality: candidate.quality || candidate.level || '',
+      headers: candidate.headers || {},
+      proxyContextToken: candidate.proxyContextToken || '',
+      lxSourceScriptId: candidate.lxSourceScriptId || '',
+      lxSourceName: candidate.lxSourceName || '',
+      lxOriginSource: candidate.lxOriginSource || matchedSong.source || '',
+    },
+  };
+}
 function renderControlSourceSwitcher(matches) {
   var el = ensureControlSourceSwitcher();
   var song = currentControlSong();
@@ -556,6 +597,7 @@ function renderControlSourceSwitcher(matches) {
   controlSourcePositionSwitcher();
 }
 async function findControlSourceMatchResult(song, provider) {
+  if (provider === 'lx') return findLxControlSourceMatchResult(song);
   var query = controlSourceSwitchQuery(song);
   if (!query) return { song: null, issue: 'no_source' };
   var data = await apiJson(controlSourceSearchUrl(provider, query), { timeoutMs: 6000 });
@@ -648,10 +690,12 @@ async function switchCurrentSongSource(provider) {
     var entry = controlSourceSwitcherState.matches && controlSourceSwitcherState.matches[provider];
     var match = controlSourceMatchSong(entry);
     var issue = controlSourceMatchIssue(entry);
+    var playbackData = entry && entry.playbackData ? entry.playbackData : null;
     if (!match) {
       var lookup = await findControlSourceMatchResult(song, provider);
       match = lookup && lookup.song ? lookup.song : null;
       issue = lookup && lookup.issue ? lookup.issue : issue;
+      playbackData = lookup && lookup.playbackData ? lookup.playbackData : null;
       if (controlSourceSwitcherState.matches) controlSourceSwitcherState.matches[provider] = lookup || { song: null, issue: issue || 'no_source' };
     }
     if (requestId !== controlSourceSwitcherState.requestId) return;
@@ -662,6 +706,11 @@ async function switchCurrentSongSource(provider) {
       renderControlSourceSwitcher(controlSourceSwitcherState.matches || {});
       return;
     }
+    if (provider === 'lx') {
+      match.originalProvider = currentProvider;
+      match.originalSource = song.source || currentProvider;
+      match._lxFallbackFrom = currentProvider;
+    }
     match.manualSourceSwitchFrom = currentProvider;
     match.manualSourceSwitchAt = Date.now();
     playQueue[currentIdx] = hydrateCustomCover(match);
@@ -669,12 +718,14 @@ async function switchCurrentSongSource(provider) {
     safeRenderQueuePanel('manual-source-switch', { scrollCurrent: miniQueueOpen });
     updateControlTrackInfo(playQueue[currentIdx]);
     showSourceFallbackNotice('正在切换音源', (song.name || '当前歌曲') + ' -> ' + controlSourceProviderTitle(provider));
-    await playQueueAt(currentIdx, {
+    var playbackOpts = {
       manual: true,
       resumeAt: currentResumeSeconds(0),
       preserveHomeState: true,
       sourceSwitch: true
-    });
+    };
+    if (provider === 'lx' && playbackData && playbackData.url) playbackOpts.preResolvedPlaybackData = playbackData;
+    await playQueueAt(currentIdx, playbackOpts);
   } catch (err) {
     console.warn('[SourceSwitch]', provider, err);
     if (currentIdx >= 0 && currentIdx < playQueue.length) {

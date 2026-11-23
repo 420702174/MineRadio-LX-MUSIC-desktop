@@ -5464,71 +5464,95 @@ const server = http.createServer(async (req, res) => {
             : sourceKey === 'mg'
               ? ['tx', 'kg', 'wy']  // 修改：QQ音乐和酷狗优先于网易云
               : ['tx', 'kg', 'wy', 'mg'];
-      let candidate = null;
-      let candidateSource = '';
+      let lastCandidate = null;
+      let lastCandidateSource = '';
+      let candidateFound = false;
+      let missingIdCandidate = null;
+      const attemptedSources = new Set();
       console.log('[LXSearchAndUrl] 开始跨平台搜索，顺序:', probeSourceOrder);
+      const resolveCandidate = async (candidate, candidateSource) => {
+        if (!candidate || attemptedSources.has(candidateSource)) return null;
+        attemptedSources.add(candidateSource);
+        candidateFound = true;
+        lastCandidate = candidate;
+        lastCandidateSource = candidateSource;
+        console.log('[LXSearchAndUrl] 找到候选:', { source: candidateSource, name: candidate.name, artist: candidate.artist });
+        console.log('[LXSearchAndUrl] 开始构建 LX musicInfo');
+        const lxMusicInfo = buildLxMusicInfoFromMatch(candidateSource, candidate);
+        console.log('[LXSearchAndUrl] LX musicInfo:', lxMusicInfo);
+        if (!lxMusicInfo || !lxMusicInfo.meta || !lxMusicInfo.meta.songId) {
+          console.log('[LXSearchAndUrl] musicInfo 缺少 songId，继续尝试其它平台');
+          missingIdCandidate = { source: candidateSource, name: candidate.name, artist: candidate.artist };
+          return null;
+        }
+        console.log('[LXSearchAndUrl] 准备调用 lxSourceManager.resolveSongUrl');
+        const result = await lxSourceManager.resolveSongUrl({
+          lxSourceScriptId: '',
+          lxSourceName: '',
+          lxOriginSource: candidateSource,
+          lxMusicInfo,
+          lxQualitys: [],
+          lxCandidates: [],
+          quality,
+        });
+        console.log('[LXSearchAndUrl] LX 返回结果:', { hasUrl: !!result.url, error: result.error, source: candidateSource });
+        if (!result || !result.url) return null;
+        return { result, candidate, candidateSource, lxMusicInfo };
+      };
       for (const probe of probeSourceOrder) {
         try {
           console.log('[LXSearchAndUrl] 尝试平台:', probe);
           const match = await searchCrossPlatformCandidate(probe, songInputWithQuery);
           console.log('[LXSearchAndUrl] 平台', probe, '搜索结果:', match ? '找到匹配' : '未找到');
           if (match) {
-            candidate = match;
-            candidateSource = probe;
-            break;
+            const resolved = await resolveCandidate(match, probe);
+            if (resolved) {
+              const proxyContextToken = rememberLxAudioProxyContext(resolved.result.headers);
+              sendJSON(res, Object.assign({}, resolved.result, {
+                playable: !!resolved.result.url,
+                proxyContextToken,
+                matchedSong: { source: resolved.candidateSource, name: resolved.candidate.name, artist: resolved.candidate.artist, musicInfo: resolved.lxMusicInfo },
+              }));
+              return;
+            }
           }
         } catch (e) {
           console.warn('[LXFallback] probe', probe, 'failed:', e && (e.message || e));
         }
       }
-      console.log('[LXSearchAndUrl] 跨平台搜索完成，candidate:', candidate ? '找到' : '未找到');
-      // 2) 兜底：原平台本身再试一次
-      if (!candidate) {
+      console.log('[LXSearchAndUrl] 跨平台搜索完成，已找到候选但均未解析成功:', candidateFound);
+      // 2) 原平台本身也必须尝试，即使其它平台已经找到过候选但 LX 解析失败。
+      if (!attemptedSources.has(sourceKey)) {
         console.log('[LXSearchAndUrl] 在原平台', sourceKey, '再试一次');
         try {
           const samePlatform = await searchCrossPlatformCandidate(sourceKey, songInputWithQuery);
-          if (samePlatform) { candidate = samePlatform; candidateSource = sourceKey; }
-        } catch (e) { /* ignore */ }
+          if (samePlatform) {
+            const resolved = await resolveCandidate(samePlatform, sourceKey);
+            if (resolved) {
+              const proxyContextToken = rememberLxAudioProxyContext(resolved.result.headers);
+              sendJSON(res, Object.assign({}, resolved.result, {
+                playable: !!resolved.result.url,
+                proxyContextToken,
+                matchedSong: { source: resolved.candidateSource, name: resolved.candidate.name, artist: resolved.candidate.artist, musicInfo: resolved.lxMusicInfo },
+              }));
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('[LXFallback] same-platform probe failed:', sourceKey, e && (e.message || e));
+        }
       }
-      if (!candidate) {
+      if (!candidateFound) {
         console.log('[LXSearchAndUrl] 所有平台都未找到匹配');
         sendJSON(res, { provider: 'lx', url: '', playable: false, error: 'LX_SEARCH_NO_CANDIDATE' });
         return;
       }
-      console.log('[LXSearchAndUrl] 找到候选:', { source: candidateSource, name: candidate.name, artist: candidate.artist });
-      console.log('[LXSearchAndUrl] 开始构建 LX musicInfo');
-      const lxMusicInfo = buildLxMusicInfoFromMatch(candidateSource, candidate);
-      console.log('[LXSearchAndUrl] LX musicInfo:', lxMusicInfo);
-      if (!lxMusicInfo || !lxMusicInfo.meta || !lxMusicInfo.meta.songId) {
-        console.log('[LXSearchAndUrl] musicInfo 缺少 songId');
-        sendJSON(res, { provider: 'lx', url: '', playable: false, error: 'LX_CANDIDATE_MISSING_ID' });
+      if (missingIdCandidate && !lastCandidate) {
+        sendJSON(res, { provider: 'lx', url: '', playable: false, error: 'LX_CANDIDATE_MISSING_ID', candidate: missingIdCandidate });
         return;
       }
-      // 3) 用 LX 脚本解析 URL
-      console.log('[LXSearchAndUrl] 准备调用 lxSourceManager.resolveSongUrl');
-      const resolvePayload = {
-        lxSourceScriptId: '',
-        lxSourceName: '',
-        lxOriginSource: candidateSource,
-        lxMusicInfo,
-        lxQualitys: [],
-        lxCandidates: [],
-        quality,
-      };
-      const result = await lxSourceManager.resolveSongUrl(resolvePayload);
-      console.log('[LXSearchAndUrl] LX 返回结果:', { hasUrl: !!result.url, error: result.error });
-      if (!result || !result.url) {
-        console.log('[LXSearchAndUrl] LX 未返回可播放URL');
-        sendJSON(res, { provider: 'lx', url: '', playable: false, error: 'LX_RESOLVE_EMPTY', candidate: { source: candidateSource, name: candidate.name, artist: candidate.artist } });
-        return;
-      }
-      console.log('[LXSearchAndUrl] ✓ 成功，准备返回结果');
-      const proxyContextToken = rememberLxAudioProxyContext(result.headers);
-      sendJSON(res, Object.assign({}, result, {
-        playable: !!result.url,
-        proxyContextToken,
-        matchedSong: { source: candidateSource, name: candidate.name, artist: candidate.artist, musicInfo: lxMusicInfo },
-      }));
+      console.log('[LXSearchAndUrl] 所有候选都未返回可播放 URL');
+      sendJSON(res, { provider: 'lx', url: '', playable: false, error: 'LX_RESOLVE_EMPTY', candidate: lastCandidate ? { source: lastCandidateSource, name: lastCandidate.name, artist: lastCandidate.artist } : missingIdCandidate });
     } catch (err) {
       console.error('[LXSearchAndUrl]', err);
       sendJSON(res, { provider: 'lx', url: '', playable: false, error: err.code || err.message || 'LX_SEARCH_AND_URL_FAILED' }, 500);

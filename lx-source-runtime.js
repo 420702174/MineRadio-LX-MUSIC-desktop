@@ -26,6 +26,30 @@ const LX_PROXY_HEADER_ALLOWLIST = new Set([
   'range',
 ]);
 
+function isLxNetworkRejection(reason) {
+  const code = String(reason && reason.code || '').toUpperCase();
+  const message = String(reason && reason.message || reason || '').toLowerCase();
+  return code.indexOf('LX_HTTP_') === 0
+    || code === 'LX_SOURCE_REQUEST_FAILED'
+    || message === 'fetch failed'
+    || message.includes('lx http request failed')
+    || message.includes('lx request timed out');
+}
+
+// Third-party LX scripts may fire-and-forget promises during bootstrap. An
+// exception from one script must be isolated to that script and never terminate
+// the host process or prevent the remaining sources from loading.
+if (typeof process !== 'undefined' && process && typeof process.on === 'function' && !process.__mineradioLxUnhandledRejectionHandler) {
+  process.__mineradioLxUnhandledRejectionHandler = true;
+  process.on('unhandledRejection', (reason) => {
+    if (isLxNetworkRejection(reason)) {
+      console.warn('[LX Source] Ignored unhandled network rejection:', reason && reason.message || reason);
+      return;
+    }
+    console.warn('[LX Source] Isolated unhandled source rejection:', reason && reason.stack || reason);
+  });
+}
+
 function createError(code, message, extra) {
   const error = new Error(message || code);
   error.code = code;
@@ -163,9 +187,13 @@ function normalizeQualityList(input) {
 function normalizeLxMusicInfo(item, sourceKey) {
   item = item || {};
   const meta = item.meta && typeof item.meta === 'object' ? item.meta : {};
-  const artists = Array.isArray(item.singer)
-    ? item.singer.map((name) => ({ name: String(name || '').trim() })).filter((entry) => entry.name)
-    : [];
+  const rawArtists = Array.isArray(item.singer)
+    ? item.singer
+    : (item.singer || item.artist || item.artists || '');
+  const artists = (Array.isArray(rawArtists) ? rawArtists : String(rawArtists).split(/\s*\/\s*|\s*,\s*|、|&| feat\.? | ft\.? /i))
+    .map((name) => String(name && name.name || name || '').trim())
+    .filter(Boolean)
+    .map((name) => ({ name }));
   const albumName = pickString(meta, ['albumName', 'album', 'album_name']) || pickString(item, ['albumName', 'album']);
   const id = pickString(meta, ['songId', 'id', 'rid', 'copyrightId', 'hash']) || pickString(item, ['id', 'songId']);
   const qualitys = normalizeQualityList(meta.qualitys || meta._qualitys || item.qualitys || item._qualitys);
@@ -406,7 +434,7 @@ class LxScriptRuntime {
     const normalizedOptions = typeof options === 'function' ? {} : options;
     const promise = this.performHttpRequest(url, normalizedOptions);
     if (!cb) {
-      return promise.catch((error) => {
+      const loggedPromise = promise.catch((error) => {
         if (error && error.code === 'LX_HTTP_TIMEOUT') {
           console.warn('[LX Source] Request timeout:', String(url));
         } else if (error && error.code !== 'LX_HTTP_URL_INVALID') {
@@ -414,7 +442,14 @@ class LxScriptRuntime {
         }
         throw error;
       });
+      // Preserve rejection for callers that await the promise, while marking
+      // the rejection handled for scripts that intentionally fire-and-forget.
+      loggedPromise.catch(() => {});
+      return loggedPromise;
     }
+    // Callback-style LX scripts often do not await request(). A rejected
+    // promise here would become an unhandled rejection and could terminate
+    // the whole Electron process when one source's bootstrap endpoint fails.
     return promise.then(
       (value) => {
         try {
@@ -422,7 +457,7 @@ class LxScriptRuntime {
           return value;
         } catch (error) {
           if (!this.initialized && this.initReject) this.initReject(error);
-          throw error;
+          return undefined;
         }
       },
       (error) => {
@@ -430,10 +465,15 @@ class LxScriptRuntime {
           cb(error);
         } catch (callbackError) {
           if (!this.initialized && this.initReject) this.initReject(callbackError);
-          throw callbackError;
+          return undefined;
         }
         if (!this.initialized && this.initReject) this.initReject(error);
-        throw error;
+        if (error && error.code === 'LX_HTTP_TIMEOUT') {
+          console.warn('[LX Source] Request timeout:', String(url));
+        } else if (error && error.code !== 'LX_HTTP_URL_INVALID') {
+          console.warn('[LX Source] Request failed:', String(url), error.message);
+        }
+        return undefined;
       }
     );
   }
@@ -584,6 +624,11 @@ function sourceSupportsAction(record, sourceKey, action) {
   return !!(schema && Array.isArray(schema.actions) && schema.actions.includes(action));
 }
 
+function sourceSupportsSearch(record, sourceKey) {
+  const schema = normalizeSourceSchemas(record && record.sourceSchemas)[String(sourceKey || '').trim().toLowerCase()] || null;
+  return !!(schema && Array.isArray(schema.actions) && (schema.actions.includes('musicSearch') || schema.actions.includes('search')));
+}
+
 class LxSourceManager {
   constructor(options) {
     options = options || {};
@@ -604,6 +649,7 @@ class LxSourceManager {
     try {
       const payload = readJsonFile(this.storeFile, { version: LX_SOURCE_STORE_VERSION, sources: [] }) || {};
       const list = Array.isArray(payload.sources) ? payload.sources : [];
+      const pendingRecords = [];
 
       console.log('[LX Source] 开始加载音源，共', list.length, '个');
 
@@ -620,17 +666,7 @@ class LxSourceManager {
             continue;
           }
 
-          // 异步加载runtime，失败不影响其他音源
-          // 使用 setImmediate 延迟执行，避免阻塞启动
-          setImmediate(() => {
-            Promise.resolve(this.loadRuntime(record)).catch((error) => {
-              console.error('[LX Source] 加载音源runtime失败:', record.name || record.id, error.message);
-              record.initStatus = 'error';
-              record.initError = error.message || 'LX_SOURCE_LOAD_FAILED';
-            }).finally(() => {
-              try { this.persist(); } catch (_) {}
-            });
-          });
+          pendingRecords.push(record);
         } catch (error) {
           console.error('[LX Source] 解析音源记录失败:', error.message, '索引:', i);
           // 跳过这个损坏的记录，继续处理下一个
@@ -639,6 +675,29 @@ class LxSourceManager {
 
       console.log('[LX Source] 音源记录加载完成，runtime将异步初始化');
       this.persist();
+      if (pendingRecords.length) {
+        // Keep startup network pressure bounded. A single unavailable source
+        // must not race all other runtimes or prevent the app from starting.
+        setImmediate(async () => {
+          let nextIndex = 0;
+          const worker = async () => {
+            while (nextIndex < pendingRecords.length) {
+              const record = pendingRecords[nextIndex++];
+              try {
+                await this.loadRuntime(record);
+              } catch (error) {
+                console.error('[LX Source] 加载音源runtime失败:', record.name || record.id, error.message);
+                record.initStatus = 'error';
+                record.initError = error.message || 'LX_SOURCE_LOAD_FAILED';
+              }
+              try { this.persist(); } catch (_) {}
+            }
+          };
+          const workerCount = Math.min(3, pendingRecords.length);
+          await Promise.all(Array.from({ length: workerCount }, () => worker()));
+          try { this.persist(); } catch (_) {}
+        });
+      }
     } catch (error) {
       console.error('[LX Source] loadStore 失败:', error);
       // 即使整个加载失败，也确保records是个数组
@@ -710,7 +769,7 @@ class LxSourceManager {
 
   listSources() {
     return this.records.slice().sort((left, right) => left.order - right.order).map((record) => ({
-      searchEnabled: Object.values(normalizeSourceSchemas(record.sourceSchemas)).some((item) => Array.isArray(item.actions) && item.actions.includes('musicSearch')),
+      searchEnabled: Object.values(normalizeSourceSchemas(record.sourceSchemas)).some((item) => Array.isArray(item.actions) && (item.actions.includes('musicSearch') || item.actions.includes('search'))),
       urlResolveEnabled: Object.values(normalizeSourceSchemas(record.sourceSchemas)).some((item) => Array.isArray(item.actions) && item.actions.includes('musicUrl')),
       id: record.id,
       name: record.name,
@@ -857,11 +916,19 @@ class LxSourceManager {
     const candidates = [];
     for (const sourceKey of supportedSources) {
       const schema = sourceSchemas[sourceKey];
-      if (schema && Array.isArray(schema.actions) && schema.actions.length && !schema.actions.includes('musicSearch')) continue;
+      if (!sourceSupportsSearch(record, sourceKey)) continue;
       let result;
       try {
-        result = await runtime.dispatchRequest('musicSearch', {
-          info: { type: sourceKey, text: keyword, page: Math.floor((Number(offset) || 0) / Math.max(1, Number(limit) || 20)) + 1, limit },
+        const searchAction = schema && Array.isArray(schema.actions) && schema.actions.includes('musicSearch') ? 'musicSearch' : 'search';
+        result = await runtime.dispatchRequest(searchAction, {
+          info: {
+            type: sourceKey,
+            source: sourceKey,
+            text: keyword,
+            keyword,
+            page: Math.floor((Number(offset) || 0) / Math.max(1, Number(limit) || 20)) + 1,
+            limit,
+          },
         }, LX_REQUEST_TIMEOUT_MS);
       } catch (_) {
         continue;

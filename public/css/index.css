@@ -2054,6 +2054,12 @@ body.empty-home-active.diy-mode #search-area:not(.has-results) #search-mode-tabs
   background: rgba(30, 215, 96, .085)
 }
 
+.tag-source.lx {
+  color: #e5ddff;
+  border-color: rgba(170, 135, 255, .34);
+  background: rgba(170, 135, 255, .10)
+}
+
 .tag-source.local {
   color: #fff1c9;
   border-color: rgba(244, 210, 138, .34);
@@ -3502,10 +3508,6 @@ body.empty-home-active.controls-visible #empty-home {
   font-size: 10px;
   color: rgba(255, 255, 255, .52);
   text-align: center
-}
-
-#lx-source-entry-note {
-  display: none !important
 }
 
 body.desktop-shell:not(.desktop-fullscreen) #upload-actions {
@@ -9909,6 +9911,69 @@ body.login-guide-active #login-guide-canvas {
   min-width: 62px;
   height: 32px;
   padding: 0 12px
+}
+
+.lx-source-console-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .035)
+}
+
+.lx-source-console-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0
+}
+
+.lx-source-console-head strong,
+.lx-source-console-head small {
+  display: block
+}
+
+.lx-source-console-head strong {
+  font-size: 12px;
+  color: rgba(255, 255, 255, .88)
+}
+
+.lx-source-console-head small {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, .44);
+  font-size: 10px
+}
+
+.lx-source-console-status {
+  flex: 0 0 auto;
+  color: rgba(var(--fc-accent-rgb), .82);
+  font-size: 10px;
+  white-space: nowrap
+}
+
+.lx-source-console-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px
+}
+
+.lx-source-console-actions .fx-mini-btn {
+  min-height: 28px;
+  padding: 0 9px
+}
+
+@media (max-width: 720px) {
+  .lx-source-console-panel {
+    align-items: stretch;
+    flex-direction: column
+  }
+
+  .lx-source-console-actions .fx-mini-btn {
+    flex: 1
+  }
 }
 
 .lx-source-modal {

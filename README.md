@@ -3,5 +3,5 @@
 
 
 # windows desktop下载
-[下载 Windows 安装包](https://github.com/420702174/MineRadio-LX-MUSIC-desktop/releases/tag/v1.0.0/Mineradio-2.1.0-Setup.exe)
+[下载 Windows 安装包](https://github.com/420702174/MineRadio-LX-MUSIC-desktop/releases/download/v2.1.0/Mineradio-2.1.0-Setup.exe)
 
